@@ -1,5 +1,6 @@
 """Page 5 — Run Analysis."""
 
+import time
 import streamlit as st
 import requests
 from components.sidebar import render_sidebar, api_url
@@ -86,23 +87,79 @@ if st.button("Run Analysis", type="primary", use_container_width=True):
         "walkforward_config": walkforward_config,
     }
 
-    with st.spinner("Running walk-forward analysis... This may take a minute."):
+    try:
+        # Start the analysis (returns immediately)
+        resp = requests.post(api_url("/analysis/run"), json=payload, timeout=30)
+        if resp.status_code == 200:
+            data = resp.json()
+            run_id = data["run_id"]
+            st.session_state["pending_run_id"] = run_id
+            st.info(f"Analysis started. Run ID: **{run_id}**")
+        else:
+            detail = resp.json().get("detail", resp.text)
+            st.error(f"Failed to start analysis: {detail}")
+    except requests.ConnectionError:
+        st.error("Cannot connect to backend. Is it running?")
+    except requests.Timeout:
+        st.error("Request timed out starting analysis.")
+
+# Poll for completion
+pending_id = st.session_state.get("pending_run_id")
+if pending_id:
+    status_placeholder = st.empty()
+    progress_bar = st.progress(0, text="Running walk-forward analysis...")
+
+    max_wait = 600  # 10 minutes max
+    poll_interval = 3
+    elapsed = 0
+
+    while elapsed < max_wait:
         try:
-            resp = requests.post(api_url("/analysis/run"), json=payload, timeout=600)
-            if resp.status_code == 200:
-                result = resp.json()
-                st.session_state["last_result"] = result
-                st.session_state["last_run_id"] = result["run_id"]
-                st.success(
-                    f"Analysis complete! Run ID: {result['run_id']} | "
-                    f"{result['n_folds']} folds | {result['duration_secs']}s"
-                )
-                st.balloons()
-                st.info("Go to **Results Dashboard** to explore the output.")
-            else:
-                detail = resp.json().get("detail", resp.text)
-                st.error(f"Analysis failed: {detail}")
-        except requests.ConnectionError:
-            st.error("Cannot connect to backend. Is it running?")
-        except requests.Timeout:
-            st.error("Request timed out. Try smaller windows or fewer features.")
+            status_resp = requests.get(api_url(f"/analysis/status/{pending_id}"), timeout=10)
+            if status_resp.status_code == 200:
+                status_data = status_resp.json()
+                current_status = status_data.get("status", "unknown")
+
+                if current_status == "completed":
+                    progress_bar.progress(100, text="Complete!")
+                    # Fetch full results
+                    result_resp = requests.get(api_url(f"/analysis/run/{pending_id}"), timeout=60)
+                    if result_resp.status_code == 200:
+                        result = result_resp.json()
+                        st.session_state["last_result"] = result
+                        st.session_state["last_run_id"] = result["run_id"]
+                        del st.session_state["pending_run_id"]
+                        st.success(
+                            f"Analysis complete! Run ID: {result['run_id']} | "
+                            f"{result['n_folds']} folds | {result['duration_secs']}s"
+                        )
+                        st.balloons()
+                        st.info("Go to **Results Dashboard** to explore the output.")
+                    else:
+                        st.warning("Analysis completed but could not fetch full results. Check Results Dashboard.")
+                        del st.session_state["pending_run_id"]
+                    break
+
+                elif current_status == "failed":
+                    progress_bar.empty()
+                    error_msg = status_data.get("error_message", "Unknown error")
+                    st.error(f"Analysis failed: {error_msg}")
+                    del st.session_state["pending_run_id"]
+                    break
+
+                else:
+                    # Still running
+                    pct = min(int((elapsed / max_wait) * 95), 95)
+                    duration = status_data.get("duration_secs")
+                    progress_bar.progress(pct, text=f"Running... ({elapsed}s elapsed)")
+
+        except Exception:
+            pass  # transient network issue, keep polling
+
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+    else:
+        progress_bar.empty()
+        st.error("Analysis timed out after 10 minutes. Check Run History for results.")
+        if "pending_run_id" in st.session_state:
+            del st.session_state["pending_run_id"]
