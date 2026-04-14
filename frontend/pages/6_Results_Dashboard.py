@@ -1,8 +1,9 @@
 """Page 6 — Results Dashboard."""
 
 import streamlit as st
+import requests
 import pandas as pd
-from components.sidebar import render_sidebar
+from components.sidebar import render_sidebar, api_url
 from components.charts import (
     price_regime_chart,
     transition_matrix_heatmap,
@@ -17,9 +18,42 @@ render_sidebar()
 
 st.header("Results Dashboard")
 
+# Try to load results from session state or fetch from backend
 result = st.session_state.get("last_result")
+
 if not result:
-    st.warning("No analysis results yet. Run an analysis first.")
+    st.info("No results in current session. Select a completed run to load results.")
+
+    # Fetch run list from backend
+    try:
+        resp = requests.get(api_url("/runs"), timeout=10)
+        if resp.status_code == 200:
+            runs = resp.json().get("runs", [])
+            completed = [r for r in runs if r["status"] == "completed"]
+            if completed:
+                run_options = {f"{r['id']} — {r['ticker']} ({r['n_folds']} folds, {r['created_at']})": r['id'] for r in completed}
+                selected = st.selectbox("Select a completed run", list(run_options.keys()))
+                run_id = run_options[selected]
+
+                if st.button("Load Results", type="primary"):
+                    with st.spinner("Loading results..."):
+                        try:
+                            res = requests.get(api_url(f"/analysis/run/{run_id}"), timeout=60)
+                            if res.status_code == 200:
+                                result = res.json()
+                                st.session_state["last_result"] = result
+                                st.session_state["last_run_id"] = run_id
+                                st.rerun()
+                            else:
+                                st.error(f"Could not load results: {res.json().get('detail', res.text)}")
+                        except Exception as e:
+                            st.error(f"Failed to load: {e}")
+            else:
+                st.warning("No completed runs found. Run an analysis first.")
+        else:
+            st.error("Could not fetch run list from backend.")
+    except requests.ConnectionError:
+        st.error("Cannot connect to backend.")
     st.stop()
 
 # KPI row
