@@ -1,0 +1,31 @@
+services:
+  # Backend — FastAPI
+  - type: web
+    name: raf-backend
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        value: sqlite:///./data/raf.db
+      - key: DATA_DIR
+        value: ./data
+      - key: OUTPUTS_DIR
+        value: ./outputs
+      - key: LOG_LEVEL
+        value: INFO
+      - key: CORS_ORIGINS
+        value: '["http://localhost:8501"]'
+
+  # Frontend — Streamlit
+  - type: web
+    name: raf-frontend
+    runtime: docker
+    dockerfilePath: frontend/Dockerfile
+    dockerContext: .
+    plan: free
+    envVars:
+      - key: BACKEND_URL
+        sync: false  # Set this manually to https://raf-backend.onrender.com after first deploy

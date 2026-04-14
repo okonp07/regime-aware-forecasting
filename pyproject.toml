@@ -1,0 +1,9 @@
+[project]
+name = "regime-aware-forecasting"
+version = "1.0.0"
+description = "SPY regime detection with walk-forward validation"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
