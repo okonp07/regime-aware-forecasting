@@ -1,6 +1,5 @@
 """Page 5 — Run Analysis."""
 
-import time
 import streamlit as st
 import requests
 from components.sidebar import render_sidebar, api_url
@@ -77,6 +76,7 @@ with st.expander("Review Configuration", expanded=True):
 
 st.divider()
 
+# Start analysis button
 if st.button("Run Analysis", type="primary", use_container_width=True):
     payload = {
         "ticker": ticker,
@@ -88,13 +88,11 @@ if st.button("Run Analysis", type="primary", use_container_width=True):
     }
 
     try:
-        # Start the analysis (returns immediately)
-        resp = requests.post(api_url("/analysis/run"), json=payload, timeout=30)
+        resp = requests.post(api_url("/analysis/run"), json=payload, timeout=25)
         if resp.status_code == 200:
             data = resp.json()
-            run_id = data["run_id"]
-            st.session_state["pending_run_id"] = run_id
-            st.info(f"Analysis started. Run ID: **{run_id}**")
+            st.session_state["pending_run_id"] = data["run_id"]
+            st.rerun()
         else:
             detail = resp.json().get("detail", resp.text)
             st.error(f"Failed to start analysis: {detail}")
@@ -103,63 +101,52 @@ if st.button("Run Analysis", type="primary", use_container_width=True):
     except requests.Timeout:
         st.error("Request timed out starting analysis.")
 
-# Poll for completion
+# Show status and poll button if a run is pending
 pending_id = st.session_state.get("pending_run_id")
 if pending_id:
-    status_placeholder = st.empty()
-    progress_bar = st.progress(0, text="Running walk-forward analysis...")
+    st.info(f"Analysis running — Run ID: **{pending_id}**")
 
-    max_wait = 600  # 10 minutes max
-    poll_interval = 3
-    elapsed = 0
+    try:
+        status_resp = requests.get(api_url(f"/analysis/status/{pending_id}"), timeout=10)
+        if status_resp.status_code == 200:
+            status_data = status_resp.json()
+            current_status = status_data.get("status", "unknown")
 
-    while elapsed < max_wait:
-        try:
-            status_resp = requests.get(api_url(f"/analysis/status/{pending_id}"), timeout=10)
-            if status_resp.status_code == 200:
-                status_data = status_resp.json()
-                current_status = status_data.get("status", "unknown")
+            if current_status == "completed":
+                st.success(f"Analysis complete! ({status_data.get('duration_secs', '?')}s, {status_data.get('n_folds', '?')} folds)")
 
-                if current_status == "completed":
-                    progress_bar.progress(100, text="Complete!")
-                    # Fetch full results
+                # Fetch full results
+                try:
                     result_resp = requests.get(api_url(f"/analysis/run/{pending_id}"), timeout=60)
                     if result_resp.status_code == 200:
                         result = result_resp.json()
                         st.session_state["last_result"] = result
                         st.session_state["last_run_id"] = result["run_id"]
                         del st.session_state["pending_run_id"]
-                        st.success(
-                            f"Analysis complete! Run ID: {result['run_id']} | "
-                            f"{result['n_folds']} folds | {result['duration_secs']}s"
-                        )
                         st.balloons()
                         st.info("Go to **Results Dashboard** to explore the output.")
                     else:
-                        st.warning("Analysis completed but could not fetch full results. Check Results Dashboard.")
-                        del st.session_state["pending_run_id"]
-                    break
+                        st.warning("Completed but could not fetch results. Try Results Dashboard.")
+                except Exception:
+                    st.warning("Completed but results fetch timed out. Try Results Dashboard.")
 
-                elif current_status == "failed":
-                    progress_bar.empty()
-                    error_msg = status_data.get("error_message", "Unknown error")
-                    st.error(f"Analysis failed: {error_msg}")
-                    del st.session_state["pending_run_id"]
-                    break
+            elif current_status == "failed":
+                error_msg = status_data.get("error_message", "Unknown error")
+                st.error(f"Analysis failed: {error_msg}")
+                del st.session_state["pending_run_id"]
 
-                else:
-                    # Still running
-                    pct = min(int((elapsed / max_wait) * 95), 95)
-                    duration = status_data.get("duration_secs")
-                    progress_bar.progress(pct, text=f"Running... ({elapsed}s elapsed)")
-
-        except Exception:
-            pass  # transient network issue, keep polling
-
-        time.sleep(poll_interval)
-        elapsed += poll_interval
-    else:
-        progress_bar.empty()
-        st.error("Analysis timed out after 10 minutes. Check Run History for results.")
-        if "pending_run_id" in st.session_state:
-            del st.session_state["pending_run_id"]
+            else:
+                # Still running — show auto-refresh
+                st.warning("Still processing... This page auto-refreshes every 5 seconds.")
+                import streamlit.components.v1 as components
+                components.html(
+                    '<script>setTimeout(function(){window.parent.location.reload()}, 5000);</script>',
+                    height=0,
+                )
+    except Exception as e:
+        st.warning(f"Could not check status: {e}. Page will retry in 5 seconds.")
+        import streamlit.components.v1 as components
+        components.html(
+            '<script>setTimeout(function(){window.parent.location.reload()}, 5000);</script>',
+            height=0,
+        )
